@@ -125,3 +125,14 @@ print(
 )
 
 print(f"\nOutput: {OUTPUT_FILE}")
+print("\nFeature importance:")
+
+feature_importance = (
+    pd.DataFrame({
+        "feature": FEATURES,
+        "importance": model.feature_importances_,
+    })
+    .sort_values("importance", ascending=False)
+)
+
+print(feature_importance.to_string(index=False))
