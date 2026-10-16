@@ -399,6 +399,16 @@ def show_admin_segmentation(df):
         }
     )
 
+    csv_data = display_data.to_csv(index=False).encode("utf-8-sig")
+
+    st.download_button(
+        label="Download Retention Action List (CSV)",
+        data=csv_data,
+        file_name="customer_retention_actions.csv",
+        mime="text/csv",
+        key=f"download_retention_actions_{st.session_state['user']['id']}",
+    )
+
     st.dataframe(
         display_data,
         width="stretch",
