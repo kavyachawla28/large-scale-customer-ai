@@ -6,6 +6,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from models.uploaded_data_analytics import segment_uploaded_customers
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPLOAD_ROOT = PROJECT_ROOT / "data" / "user_uploads"
@@ -154,12 +156,8 @@ def show_admin_analytics(df):
     st.header("Business Analytics")
     st.caption("Analytics generated from your uploaded dataset.")
 
-    # Use completed orders for business KPIs and charts.
     completed = df[
-        df["order_status"]
-        .astype(str)
-        .str.lower()
-        .eq("completed")
+        df["order_status"].astype(str).str.lower().eq("completed")
     ].copy()
 
     if completed.empty:
@@ -172,6 +170,7 @@ def show_admin_analytics(df):
     total_revenue = completed["revenue"].sum()
     total_transactions = completed["transaction_id"].nunique()
     customer_count = completed["customer_id"].nunique()
+
     average_order_value = (
         total_revenue / total_transactions
         if total_transactions
@@ -186,6 +185,7 @@ def show_admin_analytics(df):
     col4.metric("Average Order Value", f"₹{average_order_value:,.2f}")
 
     st.subheader("Revenue by Category")
+
     category_data = (
         completed.groupby("category", as_index=False)
         .agg(revenue=("revenue", "sum"))
@@ -259,10 +259,162 @@ def show_admin_analytics(df):
     )
 
 
+def show_admin_segmentation(df):
+    st.divider()
+    st.header("Customer Intelligence")
+    st.caption(
+        "K-Means segmentation calculated from your uploaded dataset."
+    )
+
+    try:
+        result = segment_uploaded_customers(df)
+    except Exception as error:
+        st.error(f"Customer segmentation failed: {error}")
+        return
+
+    if not result["success"]:
+        st.warning(result["error"])
+        return
+
+    customers = result["customers"]
+
+    st.success(
+        f"Segmentation completed for {len(customers):,} customers "
+        f"across {result['clusters']} clusters."
+    )
+
+    segments = sorted(customers["customer_segment"].unique())
+
+    selected_segments = st.multiselect(
+        "Filter customer segments",
+        options=segments,
+        default=segments,
+        key=f"admin_segment_filter_{st.session_state['user']['id']}",
+    )
+
+    filtered = customers[
+        customers["customer_segment"].isin(selected_segments)
+    ].copy()
+
+    if filtered.empty:
+        st.info("Select at least one segment to view its analytics.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Customers Segmented",
+        f"{filtered['customer_id'].nunique():,}",
+    )
+    col2.metric(
+        "Average Customer Spend",
+        f"₹{filtered['total_spend'].mean():,.2f}",
+    )
+    col3.metric(
+        "Average Transactions",
+        f"{filtered['total_transactions'].mean():.2f}",
+    )
+
+    segment_counts = (
+        filtered.groupby("customer_segment", as_index=False)
+        .agg(customers=("customer_id", "nunique"))
+        .sort_values("customers", ascending=False)
+    )
+
+    fig_distribution = px.bar(
+        segment_counts,
+        x="customer_segment",
+        y="customers",
+        text="customers",
+        title="Customer Distribution by Segment",
+        labels={
+            "customer_segment": "Customer Segment",
+            "customers": "Customers",
+        },
+    )
+    fig_distribution.update_layout(height=420)
+    st.plotly_chart(fig_distribution, width="stretch")
+
+    segment_spend = (
+        filtered.groupby("customer_segment", as_index=False)
+        .agg(total_spend=("total_spend", "sum"))
+        .sort_values("total_spend", ascending=False)
+    )
+
+    fig_spend = px.bar(
+        segment_spend,
+        x="customer_segment",
+        y="total_spend",
+        title="Total Spend by Customer Segment",
+        labels={
+            "customer_segment": "Customer Segment",
+            "total_spend": "Total Spend (₹)",
+        },
+    )
+    fig_spend.update_layout(height=420)
+    st.plotly_chart(fig_spend, width="stretch")
+
+    fig_activity = px.scatter(
+        filtered,
+        x="total_transactions",
+        y="total_spend",
+        color="customer_segment",
+        hover_data=[
+            "customer_id",
+            "avg_order_value",
+            "days_since_last_purchase",
+        ],
+        title="Customer Spend vs. Transaction Activity",
+        labels={
+            "total_transactions": "Transactions",
+            "total_spend": "Total Spend (₹)",
+            "customer_segment": "Customer Segment",
+        },
+    )
+    fig_activity.update_layout(height=480)
+    st.plotly_chart(fig_activity, width="stretch")
+
+    st.subheader("Customer Segment Details")
+
+    display_columns = [
+        "customer_id",
+        "total_spend",
+        "total_transactions",
+        "avg_order_value",
+        "days_since_last_purchase",
+        "cluster",
+        "customer_segment",
+    ]
+
+    display_data = filtered[display_columns].copy().rename(
+        columns={
+            "customer_id": "Customer ID",
+            "total_spend": "Total Spend",
+            "total_transactions": "Transactions",
+            "avg_order_value": "Average Order Value",
+            "days_since_last_purchase": "Days Since Last Purchase",
+            "cluster": "Cluster ID",
+            "customer_segment": "Customer Segment",
+        }
+    )
+
+    st.dataframe(
+        display_data,
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.caption(
+        "Segments are inferred from behavioral features in the uploaded "
+        "dataset. Small datasets can produce unstable clusters."
+    )
+
+
 def show_admin_workspace(user):
     st.title("🛠️ Admin Workspace")
     st.caption(
-        "Upload transaction data to generate business analytics."
+        "Upload transaction data to generate business analytics "
+        "and customer intelligence."
     )
 
     uploaded_file = st.file_uploader(
@@ -310,7 +462,6 @@ def show_admin_workspace(user):
             st.session_state["admin_dataset_ready"] = True
             st.session_state["admin_dataset_path"] = result["output_path"]
 
-    # Load only the dataset belonging to this logged-in admin.
     try:
         admin_df = load_admin_data(user["id"])
     except Exception as error:
@@ -319,8 +470,12 @@ def show_admin_workspace(user):
 
     if admin_df is None:
         st.info("Upload a dataset to begin. No demo dataset is loaded here.")
-        st.markdown("**Processing:** Upload → Validate → Clean → Transform → Analyze")
+        st.markdown(
+            "**Processing:** Upload → Validate → Clean → Transform → Analyze"
+        )
         return
 
     st.success("Your processed dataset is available for analysis.")
+
     show_admin_analytics(admin_df)
+    show_admin_segmentation(admin_df)
