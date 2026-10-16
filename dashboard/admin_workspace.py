@@ -1,0 +1,326 @@
+
+from pathlib import Path
+
+import polars as pl
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UPLOAD_ROOT = PROJECT_ROOT / "data" / "user_uploads"
+
+REQUIRED_COLUMNS = [
+    "transaction_id",
+    "customer_id",
+    "timestamp",
+    "product_id",
+    "category",
+    "quantity",
+    "price",
+    "discount",
+    "revenue",
+    "device",
+    "city",
+    "payment_method",
+    "session_duration",
+    "pages_viewed",
+    "order_status",
+]
+
+
+def read_uploaded_file(uploaded_file):
+    filename = uploaded_file.name.lower()
+
+    if filename.endswith(".csv"):
+        return pl.read_csv(uploaded_file)
+
+    if filename.endswith(".parquet"):
+        return pl.read_parquet(uploaded_file)
+
+    raise ValueError("Only CSV and Parquet files are supported.")
+
+
+def validate_columns(df):
+    return [
+        column
+        for column in REQUIRED_COLUMNS
+        if column not in df.columns
+    ]
+
+
+def clean_and_transform(df):
+    df = df.with_columns(
+        pl.col("timestamp")
+        .cast(pl.String)
+        .str.to_datetime(strict=False)
+        .alias("timestamp")
+    )
+
+    numeric_columns = [
+        "quantity",
+        "price",
+        "discount",
+        "revenue",
+        "session_duration",
+        "pages_viewed",
+    ]
+
+    df = df.with_columns([
+        pl.col(column)
+        .cast(pl.Float64, strict=False)
+        .alias(column)
+        for column in numeric_columns
+    ])
+
+    df = df.filter(
+        pl.col("timestamp").is_not_null()
+        & (pl.col("quantity") > 0)
+        & (pl.col("price") > 0)
+        & (pl.col("revenue") > 0)
+    )
+
+    df = df.with_columns(
+        pl.col("timestamp").dt.year().alias("year"),
+        pl.col("timestamp").dt.month().alias("month"),
+        pl.col("timestamp").dt.date().alias("transaction_date"),
+        (pl.col("quantity") * pl.col("price")).alias("gross_amount"),
+        (
+            pl.col("quantity")
+            * pl.col("price")
+            * pl.col("discount")
+            / 100
+        ).alias("discount_amount"),
+        (pl.col("revenue") / pl.col("quantity")).alias(
+            "revenue_per_item"
+        ),
+    )
+
+    return df
+
+
+def process_uploaded_dataset(uploaded_file, admin_id):
+    df = read_uploaded_file(uploaded_file)
+
+    missing_columns = validate_columns(df)
+
+    if missing_columns:
+        return {
+            "success": False,
+            "error": "Missing required columns: "
+            + ", ".join(missing_columns),
+        }
+
+    original_rows = df.height
+    df = clean_and_transform(df)
+
+    if df.height == 0:
+        return {
+            "success": False,
+            "error": "No valid rows remain after cleaning.",
+        }
+
+    admin_directory = UPLOAD_ROOT / str(admin_id)
+    admin_directory.mkdir(parents=True, exist_ok=True)
+
+    output_path = admin_directory / "transactions_processed.parquet"
+    df.write_parquet(output_path)
+
+    return {
+        "success": True,
+        "output_path": str(output_path),
+        "original_rows": original_rows,
+        "processed_rows": df.height,
+        "customers": df["customer_id"].n_unique(),
+        "products": df["product_id"].n_unique(),
+        "categories": df["category"].n_unique(),
+        "cities": df["city"].n_unique(),
+        "date_min": df["timestamp"].min(),
+        "date_max": df["timestamp"].max(),
+    }
+
+
+def load_admin_data(admin_id):
+    path = UPLOAD_ROOT / str(admin_id) / "transactions_processed.parquet"
+
+    if not path.exists():
+        return None
+
+    return pd.read_parquet(path)
+
+
+def show_admin_analytics(df):
+    st.divider()
+    st.header("Business Analytics")
+    st.caption("Analytics generated from your uploaded dataset.")
+
+    # Use completed orders for business KPIs and charts.
+    completed = df[
+        df["order_status"]
+        .astype(str)
+        .str.lower()
+        .eq("completed")
+    ].copy()
+
+    if completed.empty:
+        st.warning(
+            "No completed orders were found. Upload data with "
+            "order_status set to 'completed' to view sales KPIs."
+        )
+        return
+
+    total_revenue = completed["revenue"].sum()
+    total_transactions = completed["transaction_id"].nunique()
+    customer_count = completed["customer_id"].nunique()
+    average_order_value = (
+        total_revenue / total_transactions
+        if total_transactions
+        else 0
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Completed Revenue", f"₹{total_revenue:,.2f}")
+    col2.metric("Completed Transactions", f"{total_transactions:,}")
+    col3.metric("Unique Customers", f"{customer_count:,}")
+    col4.metric("Average Order Value", f"₹{average_order_value:,.2f}")
+
+    st.subheader("Revenue by Category")
+    category_data = (
+        completed.groupby("category", as_index=False)
+        .agg(revenue=("revenue", "sum"))
+        .sort_values("revenue", ascending=False)
+    )
+
+    fig_category = px.bar(
+        category_data,
+        x="category",
+        y="revenue",
+        title="Revenue by Category",
+        labels={"category": "Category", "revenue": "Revenue"},
+    )
+    fig_category.update_layout(height=400)
+    st.plotly_chart(fig_category, width="stretch")
+
+    left, right = st.columns(2)
+
+    with left:
+        city_data = (
+            completed.groupby("city", as_index=False)
+            .agg(revenue=("revenue", "sum"))
+            .sort_values("revenue", ascending=False)
+        )
+
+        fig_city = px.bar(
+            city_data,
+            x="city",
+            y="revenue",
+            title="Revenue by City",
+            labels={"city": "City", "revenue": "Revenue"},
+        )
+        fig_city.update_layout(height=400)
+        st.plotly_chart(fig_city, width="stretch")
+
+    with right:
+        monthly_data = (
+            completed.groupby(["year", "month"], as_index=False)
+            .agg(revenue=("revenue", "sum"))
+            .sort_values(["year", "month"])
+        )
+
+        monthly_data["month_date"] = pd.to_datetime(
+            monthly_data["year"].astype(str)
+            + "-"
+            + monthly_data["month"].astype(str)
+            + "-01"
+        )
+
+        fig_monthly = px.line(
+            monthly_data,
+            x="month_date",
+            y="revenue",
+            markers=True,
+            title="Monthly Revenue Trend",
+            labels={"month_date": "Month", "revenue": "Revenue"},
+        )
+        fig_monthly.update_layout(height=400)
+        st.plotly_chart(fig_monthly, width="stretch")
+
+    st.subheader("Uploaded Data Preview")
+    st.dataframe(
+        completed.head(100),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.caption(
+        "Sales KPIs use completed orders only. "
+        "The table displays up to 100 completed-order records."
+    )
+
+
+def show_admin_workspace(user):
+    st.title("🛠️ Admin Workspace")
+    st.caption(
+        "Upload transaction data to generate business analytics."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload a CSV or Parquet transaction dataset",
+        type=["csv", "parquet"],
+    )
+
+    with st.expander("Required dataset columns"):
+        st.code(", ".join(REQUIRED_COLUMNS))
+
+    if uploaded_file is not None:
+        st.write(f"Selected file: **{uploaded_file.name}**")
+
+        if st.button("Process Dataset", type="primary"):
+            try:
+                with st.spinner("Validating and processing your dataset..."):
+                    result = process_uploaded_dataset(
+                        uploaded_file,
+                        user["id"],
+                    )
+            except Exception as error:
+                st.error(f"Processing failed: {error}")
+                return
+
+            if not result["success"]:
+                st.error(result["error"])
+                return
+
+            st.success("Dataset validated and processed successfully.")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Original Rows", f"{result['original_rows']:,}")
+            col2.metric("Processed Rows", f"{result['processed_rows']:,}")
+            col3.metric("Unique Customers", f"{result['customers']:,}")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Products", f"{result['products']:,}")
+            col2.metric("Categories", f"{result['categories']:,}")
+            col3.metric("Cities", f"{result['cities']:,}")
+
+            st.write(
+                f"**Date Range:** {result['date_min']} — {result['date_max']}"
+            )
+
+            st.session_state["admin_dataset_ready"] = True
+            st.session_state["admin_dataset_path"] = result["output_path"]
+
+    # Load only the dataset belonging to this logged-in admin.
+    try:
+        admin_df = load_admin_data(user["id"])
+    except Exception as error:
+        st.error(f"Could not load your processed dataset: {error}")
+        return
+
+    if admin_df is None:
+        st.info("Upload a dataset to begin. No demo dataset is loaded here.")
+        st.markdown("**Processing:** Upload → Validate → Clean → Transform → Analyze")
+        return
+
+    st.success("Your processed dataset is available for analysis.")
+    show_admin_analytics(admin_df)

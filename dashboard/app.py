@@ -1,6 +1,33 @@
+
+import sys
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+
+
+# ---------------------------------------------------------
+# Make project root available for imports
+# ---------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ---------------------------------------------------------
+# Project imports
+# ---------------------------------------------------------
+from auth.database import initialize_database
+from dashboard.auth_page import show_auth_page
+from dashboard.admin_workspace import show_admin_workspace
+
+
+# ---------------------------------------------------------
+# Initialize authentication database
+# ---------------------------------------------------------
+initialize_database()
 
 
 # ---------------------------------------------------------
@@ -14,37 +41,135 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------
-# Load analytical dataset
+# Session state
+# ---------------------------------------------------------
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+
+# ---------------------------------------------------------
+# Authentication gate
+# ---------------------------------------------------------
+if not st.session_state["authenticated"] or not st.session_state["user"]:
+    show_auth_page()
+    st.stop()
+
+
+# ---------------------------------------------------------
+# Logged-in user
+# ---------------------------------------------------------
+user = st.session_state["user"]
+
+user_name = user["name"]
+user_role = user["role"]
+
+
+# ---------------------------------------------------------
+# Sidebar user information
+# ---------------------------------------------------------
+st.sidebar.success(f"Logged in as {user_name}")
+st.sidebar.write(f"**Role:** {user_role.title()}")
+
+if st.sidebar.button("Logout"):
+    st.session_state["authenticated"] = False
+    st.session_state["user"] = None
+    st.session_state.pop("admin_dataset_path", None)
+    st.session_state.pop("admin_dataset_ready", None)
+    st.rerun()
+
+
+# ---------------------------------------------------------
+# ADMIN VIEW
+# Admins upload and process their own datasets.
+# The synthetic customer demo dataset is not loaded here.
+# ---------------------------------------------------------
+if user_role == "admin":
+    show_admin_workspace(user)
+    st.stop()
+
+
+# ---------------------------------------------------------
+# CUSTOMER VIEW
+# Customers can view the read-only synthetic demo dashboard.
 # ---------------------------------------------------------
 @st.cache_data
 def load_sales_data():
-    path = "data/processed/powerbi_sales_summary.parquet"
+    path = (
+        PROJECT_ROOT
+        / "data"
+        / "processed"
+        / "powerbi_sales_summary.parquet"
+    )
+
+    if not path.exists():
+        raise FileNotFoundError(
+            "The customer demo dashboard dataset was not found. "
+            "Expected file: data/processed/powerbi_sales_summary.parquet"
+        )
+
     df = pd.read_parquet(path)
 
+    required_columns = [
+        "year",
+        "month",
+        "category",
+        "city",
+        "transactions",
+        "revenue",
+    ]
+
+    missing = [
+        column for column in required_columns
+        if column not in df.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            "The customer demo dataset is missing columns: "
+            + ", ".join(missing)
+        )
+
     df["date"] = pd.to_datetime(
-        df["year"].astype(str) + "-" +
-        df["month"].astype(str) + "-01"
+        df["year"].astype(str)
+        + "-"
+        + df["month"].astype(str)
+        + "-01",
+        errors="coerce",
     )
 
     return df
 
 
-sales = load_sales_data()
+try:
+    sales = load_sales_data()
+except Exception as error:
+    st.error(f"Could not load the customer demo dashboard: {error}")
+    st.stop()
 
 
 # ---------------------------------------------------------
-# Header
+# Customer header
 # ---------------------------------------------------------
 st.title("📊 Customer AI Analytics")
-st.caption(
-    "Large-Scale Customer Analytics & AI Platform"
-)
+
+st.caption("Large-Scale Customer Analytics & AI Platform")
 
 st.markdown(
     """
-    Analyze business performance, customer behavior,
-    and AI-driven customer risk from processed analytical data.
+    Welcome to the customer analytics workspace.
+
+    Explore business performance, customer behavior,
+    and AI-driven customer risk insights.
     """
+)
+
+st.info(
+    "Customer Demo View — the dashboard currently uses "
+    "the project's synthetic dataset. It is read-only; "
+    "customers cannot upload or modify datasets."
 )
 
 
@@ -53,29 +178,32 @@ st.markdown(
 # ---------------------------------------------------------
 st.sidebar.header("Dashboard Filters")
 
-years = sorted(sales["year"].unique())
-categories = sorted(sales["category"].unique())
-cities = sorted(sales["city"].unique())
+years = sorted(sales["year"].dropna().unique().tolist())
+categories = sorted(sales["category"].dropna().unique().tolist())
+cities = sorted(sales["city"].dropna().unique().tolist())
 
 selected_years = st.sidebar.multiselect(
     "Year",
-    years,
+    options=years,
     default=years,
 )
 
 selected_categories = st.sidebar.multiselect(
     "Category",
-    categories,
+    options=categories,
     default=categories,
 )
 
 selected_cities = st.sidebar.multiselect(
     "City",
-    cities,
+    options=cities,
     default=cities,
 )
 
 
+# ---------------------------------------------------------
+# Apply filters
+# ---------------------------------------------------------
 filtered = sales[
     sales["year"].isin(selected_years)
     & sales["category"].isin(selected_categories)
@@ -89,10 +217,11 @@ filtered = sales[
 total_revenue = filtered["revenue"].sum()
 total_transactions = filtered["transactions"].sum()
 
-if total_transactions > 0:
-    average_order_value = total_revenue / total_transactions
-else:
-    average_order_value = 0
+average_order_value = (
+    total_revenue / total_transactions
+    if total_transactions > 0
+    else 0
+)
 
 
 # ---------------------------------------------------------
@@ -118,8 +247,18 @@ with col3:
         f"₹{average_order_value:,.0f}",
     )
 
-
 st.divider()
+
+
+# ---------------------------------------------------------
+# Show charts only when filters return data
+# ---------------------------------------------------------
+if filtered.empty:
+    st.warning(
+        "No records match the selected filters. "
+        "Select at least one year, category, and city."
+    )
+    st.stop()
 
 
 # ---------------------------------------------------------
@@ -148,10 +287,7 @@ fig_category.update_layout(
     yaxis_tickformat=".2s",
 )
 
-st.plotly_chart(
-    fig_category,
-    use_container_width=True,
-)
+st.plotly_chart(fig_category, width="stretch")
 
 
 # ---------------------------------------------------------
@@ -180,10 +316,7 @@ fig_city.update_layout(
     yaxis_tickformat=".2s",
 )
 
-st.plotly_chart(
-    fig_city,
-    use_container_width=True,
-)
+st.plotly_chart(fig_city, width="stretch")
 
 
 # ---------------------------------------------------------
@@ -213,10 +346,7 @@ fig_monthly.update_layout(
     yaxis_tickformat=".2s",
 )
 
-st.plotly_chart(
-    fig_monthly,
-    use_container_width=True,
-)
+st.plotly_chart(fig_monthly, width="stretch")
 
 
 # ---------------------------------------------------------
@@ -224,5 +354,5 @@ st.plotly_chart(
 # ---------------------------------------------------------
 st.caption(
     f"Showing {len(filtered):,} analytical records "
-    f"across the selected filters."
+    "across the selected filters."
 )

@@ -6,3 +6,17 @@ data/processed/
 .vscode/
 *.pbi/
 *.pbix
+# User uploads and private local databases
+data/user_uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local test datasets
+customer_transactions_sample.csv
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
