@@ -6,8 +6,8 @@ def analyze_customer_inactivity(transactions):
     """
     Estimate customer inactivity risk from transaction history.
 
-    This is a rule-based estimate, not a trained or validated
-    machine-learning churn prediction model.
+    Risk categories are rule-based indicators, not validated
+    machine-learning churn predictions.
     """
 
     required_columns = {
@@ -47,8 +47,6 @@ def analyze_customer_inactivity(transactions):
             "error": "No valid customer transaction history was found.",
         }
 
-    # Use the latest date in the uploaded data as the reference date.
-    # This avoids comparing historical datasets against today's date.
     reference_date = df["timestamp"].max().normalize()
 
     customers = (
@@ -65,7 +63,6 @@ def analyze_customer_inactivity(transactions):
         reference_date - customers["last_purchase"].dt.normalize()
     ).dt.days.clip(lower=0)
 
-    # Transparent heuristic thresholds, not learned model boundaries.
     customers["inactivity_risk"] = pd.cut(
         customers["days_since_last_purchase"],
         bins=[-1, 30, 60, float("inf")],
@@ -79,11 +76,72 @@ def analyze_customer_inactivity(transactions):
             "Purchased within the last 30 days"
             if days <= 30
             else (
-                "No purchase for 31–60 days"
+                "No purchase for 31-60 days"
                 if days <= 60
                 else "No purchase for more than 60 days"
             )
         )
+    )
+
+    # Relative spending is used to prioritize retention actions.
+    median_spend = customers["total_spend"].median()
+
+    def recommend(row):
+        high_value = row["total_spend"] >= median_spend
+        risk = row["inactivity_risk"]
+
+        if risk == "High" and high_value:
+            return (
+                "High Priority",
+                "Personalized win-back outreach",
+                "High inactivity and relatively high historical spend",
+            )
+
+        if risk == "High":
+            return (
+                "Re-engagement",
+                "Send a re-engagement message",
+                "Long time since last recorded purchase",
+            )
+
+        if risk == "Medium" and high_value:
+            return (
+                "Retention Priority",
+                "Offer a relevant loyalty benefit",
+                "Relatively high spend and increasing inactivity",
+            )
+
+        if risk == "Medium":
+            return (
+                "Engagement",
+                "Share relevant products or offers",
+                "No purchase for 31-60 days",
+            )
+
+        if high_value:
+            return (
+                "Loyalty Opportunity",
+                "Consider a loyalty or appreciation offer",
+                "Recent purchase activity and relatively high spend",
+            )
+
+        return (
+            "Maintain Engagement",
+            "Use regular, relevant customer communication",
+            "Recent purchase activity",
+        )
+
+    recommendations = customers.apply(recommend, axis=1)
+
+    customers[
+        [
+            "retention_priority",
+            "recommended_action",
+            "recommendation_reason",
+        ]
+    ] = pd.DataFrame(
+        recommendations.tolist(),
+        index=customers.index,
     )
 
     customers = customers.sort_values(
@@ -96,8 +154,9 @@ def analyze_customer_inactivity(transactions):
         "customers": customers,
         "reference_date": reference_date,
         "risk_thresholds_days": {
-            "Low": "0–30 days",
-            "Medium": "31–60 days",
+            "Low": "0-30 days",
+            "Medium": "31-60 days",
             "High": "More than 60 days",
         },
+        "spending_reference": median_spend,
     }

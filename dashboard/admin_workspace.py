@@ -483,13 +483,15 @@ def show_admin_workspace(user):
     show_admin_churn_risk(admin_df)
 
 
+
 def show_admin_churn_risk(df):
-    """Display transparent, rule-based customer inactivity indicators."""
+    """Display inactivity risk and rule-based retention recommendations."""
     st.divider()
     st.header("Customer Inactivity Risk")
     st.caption(
-        "Rule-based inactivity analysis using your uploaded transaction "
-        "history. This is not a validated machine-learning churn prediction."
+        "Rule-based inactivity analysis and retention recommendations "
+        "from your uploaded transaction history. This is not a validated "
+        "machine-learning churn prediction."
     )
 
     try:
@@ -506,8 +508,8 @@ def show_admin_churn_risk(df):
     reference_date = result["reference_date"]
 
     st.info(
-        f"Reference date: {reference_date.date()}. Risk is based on days "
-        "since the last recorded purchase in this dataset."
+        f"Reference date: {reference_date.date()}. Inactivity is measured "
+        "from the latest transaction date in this uploaded dataset."
     )
 
     risk_options = ["Low", "Medium", "High"]
@@ -576,15 +578,55 @@ def show_admin_churn_risk(df):
     fig_recency.update_layout(height=400)
     st.plotly_chart(fig_recency, width="stretch")
 
-    st.subheader("Customer Inactivity Details")
+    st.subheader("Customer Retention Recommendations")
+
+    priority_order = [
+        "High Priority",
+        "Retention Priority",
+        "Re-engagement",
+        "Engagement",
+        "Loyalty Opportunity",
+        "Maintain Engagement",
+    ]
+
+    priority_counts = (
+        filtered.groupby("retention_priority", as_index=False)
+        .agg(customers=("customer_id", "nunique"))
+    )
+    priority_counts["retention_priority"] = pd.Categorical(
+        priority_counts["retention_priority"],
+        categories=priority_order,
+        ordered=True,
+    )
+    priority_counts = priority_counts.sort_values("retention_priority")
+
+    fig_priority = px.bar(
+        priority_counts,
+        x="retention_priority",
+        y="customers",
+        text="customers",
+        title="Customers by Retention Priority",
+        labels={
+            "retention_priority": "Retention Priority",
+            "customers": "Customers",
+        },
+    )
+    fig_priority.update_layout(height=420, xaxis_tickangle=-25)
+    st.plotly_chart(fig_priority, width="stretch")
+
+    st.subheader("Customer Retention Action List")
+
     display_columns = [
         "customer_id",
         "total_transactions",
         "total_spend",
         "days_since_last_purchase",
         "inactivity_risk",
-        "risk_reason",
+        "retention_priority",
+        "recommended_action",
+        "recommendation_reason",
     ]
+
     display_data = filtered[display_columns].rename(
         columns={
             "customer_id": "Customer ID",
@@ -592,12 +634,22 @@ def show_admin_churn_risk(df):
             "total_spend": "Total Spend",
             "days_since_last_purchase": "Days Since Last Purchase",
             "inactivity_risk": "Inactivity Risk",
-            "risk_reason": "Reason",
+            "retention_priority": "Retention Priority",
+            "recommended_action": "Recommended Action",
+            "recommendation_reason": "Recommendation Reason",
         }
     )
-    st.dataframe(display_data, width="stretch", hide_index=True)
+
+    st.dataframe(
+        display_data,
+        width="stretch",
+        hide_index=True,
+    )
+
     st.caption(
-        "Illustrative thresholds: Low = 0–30 days, Medium = 31–60 days, "
-        "High = more than 60 days. Adapt these thresholds to the business's "
-        "normal purchase cycle before using them for decisions."
+        "Inactivity thresholds are illustrative: Low = 0-30 days, "
+        "Medium = 31-60 days, High = more than 60 days. Spending priority "
+        "uses the median spend in this dataset. Recommendations are "
+        "heuristics; validate them against the business's purchase cycle "
+        "before making customer-facing decisions."
     )
