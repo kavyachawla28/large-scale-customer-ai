@@ -7,6 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from models.uploaded_data_analytics import segment_uploaded_customers
+from models.uploaded_churn_risk import analyze_customer_inactivity
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -479,3 +480,124 @@ def show_admin_workspace(user):
 
     show_admin_analytics(admin_df)
     show_admin_segmentation(admin_df)
+    show_admin_churn_risk(admin_df)
+
+
+def show_admin_churn_risk(df):
+    """Display transparent, rule-based customer inactivity indicators."""
+    st.divider()
+    st.header("Customer Inactivity Risk")
+    st.caption(
+        "Rule-based inactivity analysis using your uploaded transaction "
+        "history. This is not a validated machine-learning churn prediction."
+    )
+
+    try:
+        result = analyze_customer_inactivity(df)
+    except Exception as error:
+        st.error(f"Customer inactivity analysis failed: {error}")
+        return
+
+    if not result.get("success"):
+        st.warning(result.get("error", "Could not analyze customer inactivity."))
+        return
+
+    customers = result["customers"].copy()
+    reference_date = result["reference_date"]
+
+    st.info(
+        f"Reference date: {reference_date.date()}. Risk is based on days "
+        "since the last recorded purchase in this dataset."
+    )
+
+    risk_options = ["Low", "Medium", "High"]
+    selected_risks = st.multiselect(
+        "Filter by inactivity risk",
+        options=risk_options,
+        default=risk_options,
+        key=f"admin_inactivity_risk_{st.session_state['user']['id']}",
+    )
+
+    filtered = customers[
+        customers["inactivity_risk"].isin(selected_risks)
+    ].copy()
+
+    if filtered.empty:
+        st.info("Select at least one risk category to view customers.")
+        return
+
+    high_count = int((filtered["inactivity_risk"] == "High").sum())
+    medium_count = int((filtered["inactivity_risk"] == "Medium").sum())
+    low_count = int((filtered["inactivity_risk"] == "Low").sum())
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Customers Analyzed", f"{len(filtered):,}")
+    col2.metric("High Inactivity", f"{high_count:,}")
+    col3.metric("Medium Inactivity", f"{medium_count:,}")
+    col4.metric("Low Inactivity", f"{low_count:,}")
+
+    risk_counts = (
+        filtered.groupby("inactivity_risk", as_index=False)
+        .agg(customers=("customer_id", "nunique"))
+    )
+    risk_counts["inactivity_risk"] = pd.Categorical(
+        risk_counts["inactivity_risk"],
+        categories=risk_options,
+        ordered=True,
+    )
+    risk_counts = risk_counts.sort_values("inactivity_risk")
+
+    fig_risk = px.bar(
+        risk_counts,
+        x="inactivity_risk",
+        y="customers",
+        text="customers",
+        title="Customers by Inactivity Risk",
+        labels={
+            "inactivity_risk": "Inactivity Risk",
+            "customers": "Customers",
+        },
+    )
+    fig_risk.update_layout(height=400)
+    st.plotly_chart(fig_risk, width="stretch")
+
+    fig_recency = px.histogram(
+        filtered,
+        x="days_since_last_purchase",
+        color="inactivity_risk",
+        nbins=20,
+        title="Days Since Last Purchase",
+        labels={
+            "days_since_last_purchase": "Days Since Last Purchase",
+            "count": "Customers",
+            "inactivity_risk": "Inactivity Risk",
+        },
+    )
+    fig_recency.update_layout(height=400)
+    st.plotly_chart(fig_recency, width="stretch")
+
+    st.subheader("Customer Inactivity Details")
+    display_columns = [
+        "customer_id",
+        "total_transactions",
+        "total_spend",
+        "days_since_last_purchase",
+        "inactivity_risk",
+        "risk_reason",
+    ]
+    display_data = filtered[display_columns].rename(
+        columns={
+            "customer_id": "Customer ID",
+            "total_transactions": "Transactions",
+            "total_spend": "Total Spend",
+            "days_since_last_purchase": "Days Since Last Purchase",
+            "inactivity_risk": "Inactivity Risk",
+            "risk_reason": "Reason",
+        }
+    )
+    st.dataframe(display_data, width="stretch", hide_index=True)
+    st.caption(
+        "Illustrative thresholds: Low = 0–30 days, Medium = 31–60 days, "
+        "High = more than 60 days. Adapt these thresholds to the business's "
+        "normal purchase cycle before using them for decisions."
+    )
