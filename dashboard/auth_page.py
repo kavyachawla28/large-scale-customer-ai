@@ -53,12 +53,6 @@ def show_auth_page():
             key="register_password",
         )
 
-        role = st.selectbox(
-            "Account Type",
-            ["customer", "admin"],
-            key="register_role",
-        )
-
         if st.button(
             "Create Account",
             type="primary",
@@ -68,7 +62,6 @@ def show_auth_page():
                 name,
                 email,
                 password,
-                role,
             )
 
             if success:

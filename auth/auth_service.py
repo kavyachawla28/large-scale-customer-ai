@@ -2,15 +2,14 @@ from .database import create_user, get_user
 from .security import hash_password, verify_password
 
 
-def register_user(name, email, password, role):
+def register_user(name, email, password):
     name = name.strip()
     email = email.strip().lower()
 
     if not name or not email or not password:
         return False, "All fields are required."
 
-    if role not in ("admin", "customer"):
-        return False, "Invalid role."
+    role = "customer"
 
     if len(password) < 6:
         return False, "Password must contain at least 6 characters."
