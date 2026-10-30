@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # ---------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------
-from auth.database import initialize_database
+from auth.database import initialize_database, get_user_by_id
 from dashboard.auth_page import show_auth_page
 from dashboard.admin_workspace import show_admin_workspace
 
@@ -51,17 +51,64 @@ if "user" not in st.session_state:
 
 
 # ---------------------------------------------------------
+# Session cleanup
+# ---------------------------------------------------------
+def clear_user_session():
+    st.session_state["authenticated"] = False
+    st.session_state["user"] = None
+
+    for key in list(st.session_state.keys()):
+        if key.startswith("admin_"):
+            st.session_state.pop(key, None)
+
+
+# ---------------------------------------------------------
 # Authentication gate
 # ---------------------------------------------------------
 if not st.session_state["authenticated"] or not st.session_state["user"]:
+    clear_user_session()
     show_auth_page()
     st.stop()
 
 
 # ---------------------------------------------------------
-# Logged-in user
+# Revalidate logged-in user against database
 # ---------------------------------------------------------
-user = st.session_state["user"]
+session_user = st.session_state["user"]
+
+try:
+    user_id = session_user.get("id")
+    db_user = get_user_by_id(user_id) if user_id is not None else None
+
+except Exception:
+    clear_user_session()
+    st.error("Unable to verify your account. Please log in again.")
+    st.stop()
+
+
+if db_user is None:
+    clear_user_session()
+    st.warning("Your account could not be verified. Please log in again.")
+    st.stop()
+
+
+db_user_id, db_name, db_email, _, db_role = db_user
+
+if db_role not in ("admin", "customer"):
+    clear_user_session()
+    st.error("Invalid account role. Please contact the administrator.")
+    st.stop()
+
+
+# Use trusted database values, not session-supplied role values.
+user = {
+    "id": db_user_id,
+    "name": db_name,
+    "email": db_email,
+    "role": db_role,
+}
+
+st.session_state["user"] = user
 
 user_name = user["name"]
 user_role = user["role"]
@@ -74,17 +121,13 @@ st.sidebar.success(f"Logged in as {user_name}")
 st.sidebar.write(f"**Role:** {user_role.title()}")
 
 if st.sidebar.button("Logout"):
-    st.session_state["authenticated"] = False
-    st.session_state["user"] = None
-    st.session_state.pop("admin_dataset_path", None)
-    st.session_state.pop("admin_dataset_ready", None)
+    clear_user_session()
     st.rerun()
 
 
 # ---------------------------------------------------------
 # ADMIN VIEW
 # Admins upload and process their own datasets.
-# The synthetic customer demo dataset is not loaded here.
 # ---------------------------------------------------------
 if user_role == "admin":
     show_admin_workspace(user)

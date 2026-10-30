@@ -1,3 +1,4 @@
+
 import sqlite3
 from pathlib import Path
 
@@ -12,21 +13,24 @@ def get_connection():
 def initialize_database():
     connection = get_connection()
 
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin', 'customer')),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'customer')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        """
-    )
 
-    connection.commit()
-    connection.close()
+        connection.commit()
+
+    finally:
+        connection.close()
 
 
 def create_user(name, email, password_hash, role):
@@ -54,15 +58,36 @@ def create_user(name, email, password_hash, role):
 def get_user(email):
     connection = get_connection()
 
-    user = connection.execute(
-        """
-        SELECT id, name, email, password_hash, role
-        FROM users
-        WHERE email = ?
-        """,
-        (email,),
-    ).fetchone()
+    try:
+        user = connection.execute(
+            """
+            SELECT id, name, email, password_hash, role
+            FROM users
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
 
-    connection.close()
+        return user
 
-    return user
+    finally:
+        connection.close()
+
+
+def get_user_by_id(user_id):
+    connection = get_connection()
+
+    try:
+        user = connection.execute(
+            """
+            SELECT id, name, email, password_hash, role
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        return user
+
+    finally:
+        connection.close()
